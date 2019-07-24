@@ -1,4 +1,4 @@
-module github.com/rm-jooho/libremonobs
+module github.com/RemoteMonster/remon-obs-lib
 
 go 1.12
 

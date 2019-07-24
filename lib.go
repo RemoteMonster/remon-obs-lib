@@ -8,7 +8,7 @@ import "C"
 import (
 	"unsafe"
 	"fmt"
-	"github.com/rm-jooho/libremonobs/Remon"
+	"github.com/RemoteMonster/remon-obs-lib/Remon"
 )
 
 var gRm *Remon.Remon
