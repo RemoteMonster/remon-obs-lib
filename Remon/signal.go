@@ -207,12 +207,22 @@ func pcReadLoop(sc *signalConnection) {
 						panic(err)
 					}
 				}
+			case "stateChange":
+				{
+					msg, err := sc.makeMessage("stateChange", &msg.body)
+					if err != nil {
+						panic(err)
+					}
+					err = sc.conn.WriteMessage(websocket.TextMessage, msg)
+					if err != nil {
+						panic(err)
+					}
+				}
 			case "quit":
 				{
 					return
 				}
 			}
-
 		}
 	}
 }
