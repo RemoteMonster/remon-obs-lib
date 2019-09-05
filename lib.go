@@ -4,10 +4,11 @@ package main
 #include <stdlib.h>
 */
 import "C"
-	
+
 import (
-	"unsafe"
 	"fmt"
+	"unsafe"
+
 	"github.com/RemoteMonster/remon-obs-lib/Remon"
 )
 
@@ -17,7 +18,6 @@ var gIsLastError = false
 var gLastError *C.char
 var gPeerID *C.char
 var gChannelID *C.char
-
 
 const (
 	OBSERVER_MSG_INIT     = 0x0001
@@ -147,14 +147,14 @@ func RemonWriteVideo(data []byte, ts uint64) (ErrorCode int) {
 	if gIsLastError {
 		return -1
 	}
-	ndata := make( []byte, len(data))
-	copy( ndata, data)
-	if( ts == 0) {
+	ndata := make([]byte, len(data))
+	copy(ndata, data)
+	if ts == 0 {
 		gRm.WriteVideo(ndata, ts, 0)
 	} else {
 		gRm.WriteVideo(ndata, ts, gVideoPtimeUs)
 	}
-	return
+	return 0
 }
 
 //export RemonWriteAudio
@@ -162,10 +162,10 @@ func RemonWriteAudio(data []byte, ts uint64) (ErrorCode int) {
 	if gIsLastError {
 		return -1
 	}
-	ndata := make( []byte, len(data))
-	copy( ndata, data)
+	ndata := make([]byte, len(data))
+	copy(ndata, data)
 	gRm.WriteAudio(ndata, ts, gAudioPtimeUs)
-	return
+	return 0
 }
 
 //export RemonClose
@@ -189,7 +189,6 @@ func RemonClose() {
 func RemonLastError() (ErrorMsg *C.char) {
 	return remonGetLastError()
 }
-
 
 func main() {
 }

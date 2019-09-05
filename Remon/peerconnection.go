@@ -8,6 +8,8 @@ import (
 	"math/rand"
 	"time"
 
+	"github.com/pion/rtp"
+
 	"github.com/pion/webrtc/v2/pkg/media"
 
 	"github.com/pion/rtcp"
@@ -16,30 +18,56 @@ import (
 )
 
 type peerconnection struct {
-	config         rmConfig
-	comm           chan commChan
-	noti           chan commChan
-	peerConnection *webrtc.PeerConnection
-	trackV         *webrtc.Track
-	trackA         *webrtc.Track
-	mediaAvailable bool
+	config          rmConfig
+	comm            chan commChan
+	noti            chan commChan
+	peerConnection  *webrtc.PeerConnection
+	trackV          *webrtc.Track
+	trackA          *webrtc.Track
+	mediaAvailable  bool
+	chanVideo       chan commMedia
+	chanAudio       chan commMedia
+	packetizerVideo rtp.Packetizer
+	packetizerAudio rtp.Packetizer
 }
 
-//var videoPt uint8 = webrtc.DefaultPayloadTypeH264
-var videoPt uint8 = 100
+//var videoPt uint8 = 100
 
 func newPeerConnection(cfg rmConfig, notichan chan commChan) *peerconnection {
-
+	var videoPt, audioPt uint8
+	var videoCodec, audioCodec *webrtc.RTPCodec
 	me := webrtc.MediaEngine{}
-	me.RegisterCodec(webrtc.NewRTPOpusCodec(webrtc.DefaultPayloadTypeOpus, 48000))
-	//me.RegisterCodec(webrtc.NewRTPVP8Codec(webrtc.DefaultPayloadTypeVP8, 90000))
-	me.RegisterCodec(webrtc.NewRTPH264Codec(videoPt, 90000))
+
+	switch cfg.audioCodec {
+	case "g722":
+		audioPt = webrtc.DefaultPayloadTypeG722
+		audioCodec = webrtc.NewRTPG722Codec(audioPt, 8000)
+	default:
+		audioPt = webrtc.DefaultPayloadTypeOpus
+		audioCodec = webrtc.NewRTPOpusCodec(audioPt, 48000)
+	}
+	switch cfg.videoCodec {
+	case "vp8":
+		videoPt = webrtc.DefaultPayloadTypeVP8
+		videoCodec = webrtc.NewRTPVP8Codec(videoPt, 90000)
+	case "vp9":
+		videoPt = webrtc.DefaultPayloadTypeVP9
+		videoCodec = webrtc.NewRTPVP9Codec(videoPt, 90000)
+	default:
+		videoPt = webrtc.DefaultPayloadTypeH264
+		videoCodec = webrtc.NewRTPH264Codec(videoPt, 90000)
+	}
+	me.RegisterCodec(audioCodec)
+	me.RegisterCodec(videoCodec)
+
 	api := webrtc.NewAPI(webrtc.WithMediaEngine(me))
 
 	pc := peerconnection{
-		config: cfg,
-		comm:   make(chan commChan, 5),
-		noti:   notichan,
+		config:    cfg,
+		comm:      make(chan commChan, 5),
+		noti:      notichan,
+		chanVideo: make(chan commMedia, 5),
+		chanAudio: make(chan commMedia, 5),
 	}
 
 	var iceservers []webrtc.ICEServer
@@ -60,18 +88,13 @@ func newPeerConnection(cfg rmConfig, notichan chan commChan) *peerconnection {
 	if err != nil {
 		panic(err)
 	}
-	/*
-		//videoTranceiver, err := peerConnection.AddTransceiver(webrtc.RTPCodecTypeVideo, webrtc.RtpTransceiverInit{Direction: webrtc.RTPTransceiverDirectionRecvonly})
-		//audioTranceiver, err := peerConnection.AddTransceiver(webrtc.RTPCodecTypeAudio, webrtc.RtpTransceiverInit{Direction: webrtc.RTPTransceiverDirectionRecvonly})
-		videoTranceiver, err := peerConnection.AddTransceiver(webrtc.RTPCodecTypeVideo, webrtc.RtpTransceiverInit{Direction: webrtc.RTPTransceiverDirectionSendrecv})
-		audioTranceiver, err := peerConnection.AddTransceiver(webrtc.RTPCodecTypeAudio, webrtc.RtpTransceiverInit{Direction: webrtc.RTPTransceiverDirectionSendrecv})
 
-		_ = videoTranceiver
-		_ = audioTranceiver
-	*/
-	// Create Track that we send video back to browser on
+	videoSSRC := rand.Uint32()
+	audioSSRC := rand.Uint32()
+	pc.packetizerVideo = rtp.NewPacketizer(1400, videoPt, videoSSRC, videoCodec.Payloader, rtp.NewRandomSequencer(), videoCodec.ClockRate)
+	pc.packetizerAudio = rtp.NewPacketizer(1400, audioPt, audioSSRC, audioCodec.Payloader, rtp.NewRandomSequencer(), audioCodec.ClockRate)
 
-	pc.trackV, err = peerConnection.NewTrack(videoPt, rand.Uint32(), "video", "pion")
+	pc.trackV, err = peerConnection.NewTrack(videoPt, videoSSRC, "video", "pion")
 	if err != nil {
 		panic(err)
 	}
@@ -79,8 +102,7 @@ func newPeerConnection(cfg rmConfig, notichan chan commChan) *peerconnection {
 	if _, err = peerConnection.AddTrack(pc.trackV); err != nil {
 		panic(err)
 	}
-
-	pc.trackA, err = peerConnection.NewTrack(webrtc.DefaultPayloadTypeOpus, rand.Uint32(), "audio", "pion")
+	pc.trackA, err = peerConnection.NewTrack(audioPt, audioSSRC, "audio", "pion")
 	if err != nil {
 		panic(err)
 	}
@@ -90,30 +112,13 @@ func newPeerConnection(cfg rmConfig, notichan chan commChan) *peerconnection {
 	}
 
 	peerConnection.OnTrack(func(track *webrtc.Track, receiver *webrtc.RTPReceiver) {
-		// Send a PLI on an interval so that the publisher is pushing a keyframe every rtcpPLIInterval
-		// This is a temporary fix until we implement incoming RTCP events, then we would push a PLI only when a viewer requests it
-		go func() {
-			ticker := time.NewTicker(time.Second * 3)
-			for range ticker.C {
-				errSend := peerConnection.WriteRTCP([]rtcp.Packet{&rtcp.PictureLossIndication{MediaSSRC: track.SSRC()}})
-				if errSend != nil {
-					//fmt.Println(errSend)
-				}
-			}
-		}()
-		for {
-			// Read RTP packets being sent to Pion
-			_, readErr := track.ReadRTP()
-			if readErr != nil {
-				panic(readErr)
-			}
-			//fmt.Printf("READ RTP %d\n", rtp.SequenceNumber)
-		}
+		fmt.Printf("################### OnTrack ID:%s\n", track.ID())
 	})
 	// Set the handler for ICE connection state
 	// This will notify you when the peer has connected/disconnected
 	peerConnection.OnICEConnectionStateChange(func(connectionState webrtc.ICEConnectionState) {
 		log.Printf("Connection State has changed %s \n", connectionState.String())
+
 		if connectionState == webrtc.ICEConnectionStateConnected {
 			pc.noti <- commChan{
 				cmd:  "stateChange",
@@ -126,6 +131,10 @@ func newPeerConnection(cfg rmConfig, notichan chan commChan) *peerconnection {
 				pc.comm <- commChan{
 					cmd: "startmedia",
 				}
+			}
+			rtpsenders := peerConnection.GetSenders()
+			for i := 0; i < len(rtpsenders); i++ {
+				go rtcpReaderLoop(&pc, i, rtpsenders[i])
 			}
 		}
 	})
@@ -144,14 +153,74 @@ func newPeerConnection(cfg rmConfig, notichan chan commChan) *peerconnection {
 
 	pc.peerConnection = peerConnection
 	go peerConnectionLoop(&pc)
+	go writeVideoLoop(&pc)
+	go writeAudioLoop(&pc)
 	return &pc
 }
 
+func rtcpReaderLoop(pc *peerconnection, idx int, rtpsender *webrtc.RTPSender) {
+	log.Println("rtcpReaderLoop+")
+	defer log.Println("rtcpReaderLoop-")
+	for {
+		packets, err := rtpsender.ReadRTCP()
+		if err != nil {
+			log.Printf("read [%d] err: %s\n", idx, err.Error())
+			return
+		} else {
+			for _, packet := range packets {
+				switch rtcp_type := packet.(type) {
+				case *rtcp.ReceiverEstimatedMaximumBitrate:
+					{
+						remb := packet.(*rtcp.ReceiverEstimatedMaximumBitrate)
+						_ = remb
+						// log.Printf("read [%d] ReceiverEstimatedMaximumBitrate %d\n", idx, remb.Bitrate)
+					}
+				case *rtcp.PictureLossIndication:
+					{
+						pli := packet.(*rtcp.PictureLossIndication)
+						_ = pli
+						// log.Printf("read [%d] PictureLossIndication %d\n", idx, pli.MediaSSRC)
+					}
+				case *rtcp.ReceiverReport:
+					{
+						rr := packet.(*rtcp.ReceiverReport)
+						for _, report := range rr.Reports {
+							_ = report
+							// log.Printf("read [%d] ReceiverReport fractionLost:%f totalLost:%d\n", idx, float64(report.FractionLost)/256.0, report.TotalLost)
+						}
+					}
+				case *rtcp.SenderReport:
+					{
+						_ = packet.(*rtcp.SenderReport)
+						// log.Printf("read [%d] SenderReport\n", idx)
+					}
+				default:
+					{
+						_ = rtcp_type
+						//	log.Printf("read [%d] unknown %v\n", idx, rtcp_type)
+					}
+				}
+			}
+		}
+	}
+}
+
 func peerConnectionLoop(pc *peerconnection) {
+	log.Println("peerConnectionLoop+")
+	defer func() {
+		close(pc.noti)
+		close(pc.chanVideo)
+		close(pc.chanAudio)
+		log.Println("peerConnectionLoop-")
+	}()
 	for {
 		select {
-		case msg := <-pc.comm:
+		case msg, ok := <-pc.comm:
 			//log.Printf("peerConnectionLoop cmd:%s\n", msg.cmd)
+			if !ok {
+				pc.peerConnection.Close()
+				return
+			}
 			switch msg.cmd {
 			case "onSdp":
 				{
@@ -258,6 +327,64 @@ func peerConnectionLoop(pc *peerconnection) {
 							//dumpBytes(*msg.media.data, 12)
 						}
 					}
+				}
+			}
+		}
+	}
+}
+
+func writeVideoLoop(pc *peerconnection) {
+	log.Println("writeVideoLoop+")
+	defer log.Println("writeVideoLoop-")
+	for {
+		select {
+		case media, ok := <-pc.chanVideo:
+			{
+				if !ok {
+					return
+				}
+				samples := uint32(videoClockRate * (media.duration / 1000000000))
+				packets := pc.packetizerVideo.Packetize(*media.data, samples)
+				for _, p := range packets {
+					err := pc.trackV.WriteRTP(p)
+					if err != nil {
+						log.Printf("Write RTP error : %v\n", err)
+					}
+					time.Sleep(time.Microsecond * 1)
+				}
+				/*
+					pc.comm <- commChan{
+						cmd: "media",
+						media: &commMedia{
+							audio:    false,
+							data:     media.data,
+							ts:       media.ts,
+							duration: media.duration,
+						},
+					}
+				*/
+			}
+		}
+	}
+}
+func writeAudioLoop(pc *peerconnection) {
+	log.Println("writeAudioLoop+")
+	defer log.Println("writeAudioLoop-")
+	for {
+		select {
+		case media, ok := <-pc.chanAudio:
+			{
+				if !ok {
+					return
+				}
+				pc.comm <- commChan{
+					cmd: "media",
+					media: &commMedia{
+						audio:    true,
+						data:     media.data,
+						ts:       media.ts,
+						duration: media.duration,
+					},
 				}
 			}
 		}

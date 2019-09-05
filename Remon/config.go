@@ -13,6 +13,9 @@ type rmConfig struct {
 	token    string
 	channel  signalChannel
 	observer Observer
+
+	videoCodec string
+	audioCodec string
 }
 
 type rtcConfig struct {

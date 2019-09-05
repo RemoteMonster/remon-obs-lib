@@ -2,6 +2,7 @@ package Remon
 
 import (
 	"encoding/json"
+	"log"
 
 	//"golang.org/x/net/websocket"
 	"github.com/gorilla/websocket"
@@ -94,6 +95,7 @@ func (sc *signalConnection) quit() {
 	if sc.config.observer != nil {
 		sc.config.observer.OnClose()
 	}
+	close(sc.pc.comm)
 }
 
 func (sc *signalConnection) makeMessage(cmd string, body *string) ([]byte, error) {
@@ -113,6 +115,9 @@ func (sc *signalConnection) makeMessage(cmd string, body *string) ([]byte, error
 
 // Read websocket message
 func wsReadLoop(sc *signalConnection) {
+	log.Println("wsReadLoop+")
+	defer log.Println("wsReadLoop-")
+
 	ws := sc.conn
 
 	ws.SetReadLimit(100000)
@@ -191,10 +196,15 @@ func wsReadLoop(sc *signalConnection) {
 }
 
 func pcReadLoop(sc *signalConnection) {
+	log.Println("pcReadLoop+")
+	defer log.Println("pcReadLoop-")
 	for {
 		select {
-		case msg := <-sc.comm:
+		case msg, ok := <-sc.comm:
 			//log.Printf("pcReadLoop cmd:%s\n", msg.cmd)
+			if !ok {
+				return
+			}
 			switch msg.cmd {
 			case "sdp":
 				{

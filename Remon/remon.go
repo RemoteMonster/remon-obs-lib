@@ -10,8 +10,9 @@ import (
 
 type Remon struct {
 	//	state  int
-	config rmConfig
-	signal *signalConnection
+	config  rmConfig
+	signal  *signalConnection
+	started bool
 }
 
 type Config struct {
@@ -44,6 +45,7 @@ func New(config Config, observer Observer) *Remon {
 
 // CreateCast : create cast
 func (rm *Remon) CreateCast(name string) error {
+	rm.started = true
 	err := rm.init()
 	if err != nil {
 		return err
@@ -66,33 +68,28 @@ func (rm *Remon) JoinCast(roomID string) error {
 }
 
 func (rm *Remon) Close() {
+	rm.started = false
 	rm.signal.close()
 }
 
 func (rm *Remon) WriteVideo(data []byte, timestamp uint64, duration float64) {
-	if rm.signal.pc != nil {
-		rm.signal.pc.comm <- commChan{
-			cmd: "media",
-			media: &commMedia{
-				audio:    false,
-				data:     &data,
-				ts:       timestamp,
-				duration: duration,
-			},
+	if rm.started {
+		rm.signal.pc.chanVideo <- commMedia{
+			audio:    false,
+			data:     &data,
+			ts:       timestamp,
+			duration: duration,
 		}
 	}
 }
 
 func (rm *Remon) WriteAudio(data []byte, timestamp uint64, duration float64) {
-	if rm.signal.pc != nil {
-		rm.signal.pc.comm <- commChan{
-			cmd: "media",
-			media: &commMedia{
-				audio:    true,
-				data:     &data,
-				ts:       timestamp,
-				duration: duration,
-			},
+	if rm.started {
+		rm.signal.pc.chanAudio <- commMedia{
+			audio:    true,
+			data:     &data,
+			ts:       timestamp,
+			duration: duration,
 		}
 	}
 }
